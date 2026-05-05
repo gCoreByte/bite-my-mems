@@ -42,13 +42,14 @@ class Device:
         self.serial = serial.Serial(port, baud_rate, timeout=2)
         print(f"Connected to {port}")
 
-    def read_line(self) -> None:
-        """Read one packet from serial."""
+    def read_line(self) -> int:
+        """Read one packet from serial. Returns the magic value."""
         magic = self._read_magic()
         if magic == SLOW_PACKET:
             self._read_slow_packet()
         else:
             self._read_mems_packet()
+        return magic
 
     def _read_magic(self) -> int:
         previous = self._read_exact(1)
