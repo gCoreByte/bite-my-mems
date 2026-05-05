@@ -17,11 +17,6 @@ const int LOADCELL_SCK_PIN = 18;
 
 float loadcell_scale;
 
-// FSR pins (ADC1)
-const int fsrPins[] = {36, 39};
-const int fsrPinsSize = sizeof(fsrPins) / sizeof(fsrPins[0]);
-const adc1_channel_t FSR_CHANNELS[] = {ADC1_CHANNEL_0, ADC1_CHANNEL_3}; // GPIO 36, 39
-
 // MEMS mic (ADC1_CHANNEL_6 = GPIO 34)
 const int MEMS_SAMPLE_RATE = 22050;
 const int MEMS_DMA_BUF_LEN = 256;
@@ -41,7 +36,6 @@ int bufferIndex = 0;
 
 struct Reading {
   int loadcell;
-  int fsr[fsrPinsSize];
   int timestamp;
 };
 
@@ -93,12 +87,6 @@ void collectData(){
     return;  // HX711 not ready — don't block, just skip this loop iteration
   }
   buffer[bufferIndex].loadcell = scale.read();
-
-  // Skip FSR reads for now — i2s_adc_disable/enable may disrupt MEMS
-  for (int i = 0; i < fsrPinsSize; i++) {
-    buffer[bufferIndex].fsr[i] = 0;
-  }
-
   buffer[bufferIndex].timestamp = millis() - start_time;
   bufferIndex++;
 }
@@ -122,9 +110,6 @@ void setup() {
   // ADC config for all ADC1 channels
   adc1_config_width(ADC_WIDTH_BIT_12);
   adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_0);  // 0-1.1V range for better mic resolution
-  for (int i = 0; i < fsrPinsSize; i++) {
-    adc1_config_channel_atten(FSR_CHANNELS[i], ADC_ATTEN_DB_11);
-  }
 
   // I2S ADC DMA for MEMS mic
   i2s_config_t i2sConfig = {};

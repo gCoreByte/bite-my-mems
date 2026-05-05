@@ -24,8 +24,8 @@ ESP32 Core 0                    ESP32 Core 1                  Laptop (Python)
 +--------------+                +--------------+              +------------------+
 | MEMS task    |                | loop()       |    USB       | Device.read_line |
 | I2S DMA ADC  |--+  serial     | HX711 poll   |---460800---> | +- 0xABCD -> CSV |
-| 22050 Hz     |  +- mutex -->  | FSR reads    |   baud       | +- 0xABCE -> .bin|
-| GPIO 34      |--+             | slow packets |              | + ring buffer    |
+| 22050 Hz     |  +- mutex -->  | slow packets |   baud       | +- 0xABCE -> .bin|
+| GPIO 34      |--+             |              |              | + ring buffer    |
 +--------------+                +--------------+              +------------------+
 ```
 
@@ -46,8 +46,8 @@ Two packet types share a common header:
 | 8+     | ...  | Payload |
 | last   | 1    | XOR checksum |
 
-**Slow packet (0xABCD)** - per reading (10 bytes):
-- `int32` loadcell, `uint16` fsr0, `uint16` fsr1, `uint16` delta_ms
+**Slow packet (0xABCD)** - per reading (8 bytes):
+- `int32` loadcell, `int32` delta_ms
 
 **MEMS packet (0xABCE)** - 512 x `uint8` samples (12-bit ADC >> 4)
 

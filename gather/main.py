@@ -7,7 +7,6 @@ from pathlib import Path
 from device import Device
 from load_cell import LoadCell
 from mems_sensor import MEMSSensor
-from sensor import Sensor
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gathered_data"
@@ -15,10 +14,8 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gathered_data"
 
 def build_device() -> Device:
     load_cell = LoadCell("weight")
-    brown_premolar = Sensor("brown_premolar")
-    green_premolar = Sensor("green_premolar")
     mems = MEMSSensor()
-    return Device(load_cell, brown_premolar, green_premolar, mems_sensor=mems, verbose=True)
+    return Device(load_cell, mems_sensor=mems, verbose=True)
 
 
 def save_marks(path: Path, start_epoch: float, marks: list[float]) -> None:
