@@ -1,0 +1,7 @@
+pyserial
+numpy
+pandas
+scipy
+matplotlib
+scikit-learn
+tensorflow

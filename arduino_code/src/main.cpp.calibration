@@ -1,0 +1,23 @@
+#include <Arduino.h>
+#include "HX711.h"
+
+const int BAUD_RATE = 460800;
+
+// HX711 circuit wiring
+HX711 scale;
+const int LOADCELL_DOUT_PIN = 19;
+const int LOADCELL_SCK_PIN = 18;
+
+void setup() {
+  Serial.begin(BAUD_RATE);
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+  scale.set_rate_80SPS();
+  scale.set_raw_mode();
+}
+
+void loop() {
+  if (scale.is_ready()) {
+    long reading = scale.read();
+    Serial.println(reading);
+  }
+}
