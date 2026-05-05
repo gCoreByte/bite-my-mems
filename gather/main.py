@@ -15,7 +15,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gathered_data"
 def build_device() -> Device:
     load_cell = LoadCell("weight")
     mems = MEMSSensor()
-    return Device(load_cell, mems_sensor=mems, verbose=True)
+    return Device(load_cell, mems_sensor=mems, verbose=False)
 
 
 def save_marks(path: Path, start_epoch: float, marks: list[float]) -> None:
