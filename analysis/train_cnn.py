@@ -129,7 +129,7 @@ def train_model(
 
     model = build_model(length=X_train.shape[1])
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE, weight_decay=1e-3),
+        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
         loss="mse",
     )
 
