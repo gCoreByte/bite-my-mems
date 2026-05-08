@@ -1,3 +1,5 @@
 __pycache__/
 pre-refactor/
 venv/
+bite_force_cnn.keras
+cnn_results.png
