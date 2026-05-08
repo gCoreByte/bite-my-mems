@@ -133,8 +133,8 @@ void setup() {
 
   // HX711
   scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
-  // scale.set_rate_80SPS();   // disabled — non-default config, suspect cause of HX711 hang
-  // scale.set_raw_mode();      // disabled — non-default config, suspect cause of HX711 hang
+  scale.set_rate_80SPS();   // disabled — non-default config, suspect cause of HX711 hang
+  scale.set_raw_mode();      // disabled — non-default config, suspect cause of HX711 hang
 
   Serial.println("HX711_INIT_DONE");
 }
