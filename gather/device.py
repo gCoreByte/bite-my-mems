@@ -1,5 +1,6 @@
 import datetime as dt
 import struct
+import time
 
 import numpy as np
 import serial
@@ -41,6 +42,28 @@ class Device:
             raise RuntimeError("No serial device found.")
         self.serial = serial.Serial(port, baud_rate, timeout=2)
         print(f"Connected to {port}")
+
+    def reset(self) -> None:
+        """Trigger an ESP32 hardware reset by pulsing EN low via the RTS line.
+
+        Returns immediately; the caller is responsible for waiting for the
+        device to finish booting before calling resync().
+        """
+        self.serial.dtr = False
+        self.serial.rts = True
+        time.sleep(0.1)
+        self.serial.rts = False
+
+    def resync(self, warmup: float = 1.0) -> None:
+        """Flush stale serial data and absorb post-boot stream noise."""
+        self.serial.reset_input_buffer()
+        end = time.monotonic() + warmup
+        while time.monotonic() < end:
+            try:
+                self.read_line()
+            except RuntimeError:
+                self.serial.reset_input_buffer()
+        self.mems_sensor.signal_lost.clear()
 
     def read_line(self) -> int:
         """Read one packet from serial. Returns the magic value."""
@@ -107,6 +130,9 @@ class Device:
         self.mems_sensor.initialize_logging(mems_path)
 
     def log(self) -> None:
+        if self.log_path is None:
+            return
+
         rows = []
         for index, moment in enumerate(self.timestamps):
             values = [str(sensor.last_read[index]) for sensor in self.sensors]

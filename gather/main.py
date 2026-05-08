@@ -1,4 +1,6 @@
+import argparse
 import json
+import statistics
 import threading
 import time
 from collections import deque
@@ -13,17 +15,35 @@ from mems_sensor import MEMSSensor
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gathered_data"
 MAX_CONSECUTIVE_STUCK_READINGS = 3
 STUCK_READING_TIMEOUT = 1
+BASELINE_DURATION_SEC = 1.0
 
 
-def build_device() -> Device:
+def build_device(verbose: bool = False) -> Device:
     load_cell = LoadCell("weight")
     mems = MEMSSensor()
-    return Device(load_cell, mems_sensor=mems, verbose=False)
+    return Device(load_cell, mems_sensor=mems, verbose=verbose)
 
 
 def save_marks(path: Path, start_epoch: float, marks: list[float]) -> None:
     with open(path, "w") as file:
         json.dump({"t0_epoch": start_epoch, "marks_sec": marks}, file, indent=2)
+
+
+def collect_baseline(device: Device, duration: float = BASELINE_DURATION_SEC) -> float:
+    """Read packets for `duration` seconds and return the median weight reading."""
+    load_cell = device.sensors[0]
+    samples: list[float] = []
+    end = time.monotonic() + duration
+    while time.monotonic() < end:
+        magic = device.read_line()
+        if device.mems_sensor.signal_lost.is_set():
+            raise RuntimeError("MEMS signal lost during baseline collection.")
+        if magic == SLOW_PACKET:
+            samples.extend(load_cell.last_read)
+
+    if not samples:
+        raise RuntimeError("No load cell samples received during baseline collection.")
+    return statistics.median(samples)
 
 
 def read_device_loop(
@@ -60,6 +80,10 @@ def read_device_loop(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
     suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
     recording_dir = DATA_DIR / suffix
     recording_dir.mkdir(parents=True, exist_ok=True)
@@ -68,7 +92,20 @@ def main() -> None:
     mems_path = recording_dir / "mems.bin"
     marks_path = recording_dir / "marks.json"
 
-    device = build_device()
+    device = build_device(verbose=args.verbose)
+
+    print("\nRestarting device...")
+    device.reset()
+    time.sleep(5)
+    device.resync()
+
+    print(f"\nCollecting baseline for {BASELINE_DURATION_SEC:.1f}s — keep the jaw still and unloaded.")
+    baseline = collect_baseline(device)
+    load_cell = device.sensors[0]
+    load_cell.baseline = baseline
+    load_cell._history.clear()
+    print(f"[LoadCell] Baseline: {baseline:.2f}")
+
     device.initialize_logging(log_path, mems_path)
 
     start_epoch = time.time()
@@ -83,7 +120,7 @@ def main() -> None:
     )
     reader.start()
 
-    print(f"Logging to {log_path}")
+    print(f"\nLogging to {log_path}")
     print("Press Enter to mark a bite. Press Ctrl+C to stop.")
 
     try:

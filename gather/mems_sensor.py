@@ -52,6 +52,8 @@ class MEMSSensor:
         self.log_file = open(path, "wb")
 
     def log(self, samples: np.ndarray) -> None:
+        if self.log_file is None:
+            return
         self.log_file.write(samples.astype(np.uint16).tobytes())
 
     def close(self) -> None:

@@ -13,6 +13,7 @@ class LoadCell(Sensor):
     def __init__(self, sensor_id: str = "weight", scale_file: Path | None = None) -> None:
         super().__init__(sensor_id)
         self.scale_file = Path(scale_file) if scale_file is not None else SCALE_FILE
+        self.baseline = 0.0
         self.load_settings()
 
     def load_settings(self) -> None:
@@ -23,5 +24,5 @@ class LoadCell(Sensor):
         print(f"[LoadCell] Tare:   {self.tare_value}")
 
     def save_data(self, raw_value: float) -> None:
-        weight = round((raw_value - self.tare_value) / self.factor, 2)
+        weight = round((raw_value - self.tare_value) / self.factor - self.baseline, 2)
         super().save_data(weight)
