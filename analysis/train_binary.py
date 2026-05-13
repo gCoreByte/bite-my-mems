@@ -13,12 +13,13 @@ import numpy as np
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_auc_score
 
+from sklearn.model_selection import train_test_split
+
 from recordings import (
     DATA_DIR,
     feature_names,
     find_recordings,
     load_binary_windows,
-    train_test_mask,
     window_to_features,
 )
 
@@ -38,8 +39,8 @@ def build_dataset(directory: str = str(DATA_DIR)) -> tuple[np.ndarray, np.ndarra
 
     for recording in recordings:
         positives, negatives = load_binary_windows(recording)
-        if not positives:
-            print("    -> skipped (no bites)")
+        if not positives and not negatives:
+            print("    -> skipped (no windows)")
             continue
 
         features.extend(window_to_features(window) for window in positives)
@@ -54,8 +55,8 @@ def build_dataset(directory: str = str(DATA_DIR)) -> tuple[np.ndarray, np.ndarra
 
     print(f"\nTotal: {len(X)} samples ({np.sum(y == 1)} bite, {np.sum(y == 0)} no-bite)")
 
-    test_mask = train_test_mask(len(X))
-    return X[~test_mask], y[~test_mask], X[test_mask], y[test_mask], feature_names()
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    return X_train, y_train, X_test, y_test, feature_names()
 
 
 def standardize(train: np.ndarray, test: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

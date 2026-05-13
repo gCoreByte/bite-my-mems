@@ -1,6 +1,7 @@
 import argparse
 import json
 import statistics
+import sys
 import threading
 import time
 from collections import deque
@@ -10,6 +11,9 @@ from pathlib import Path
 from device import Device, SLOW_PACKET
 from load_cell import LoadCell
 from mems_sensor import MEMSSensor
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "analysis"))
+from recordings import mic_calibration_factor  # noqa: E402
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gathered_data"
@@ -24,9 +28,12 @@ def build_device(verbose: bool = False) -> Device:
     return Device(load_cell, mems_sensor=mems, verbose=verbose)
 
 
-def save_marks(path: Path, start_epoch: float, marks: list[float]) -> None:
+def save_marks(path: Path, start_epoch: float, marks: list[float], mic_calibration: float | None) -> None:
+    payload: dict = {"t0_epoch": start_epoch, "marks_sec": marks}
+    if mic_calibration is not None:
+        payload["mic_calibration"] = mic_calibration
     with open(path, "w") as file:
-        json.dump({"t0_epoch": start_epoch, "marks_sec": marks}, file, indent=2)
+        json.dump(payload, file, indent=2)
 
 
 def collect_baseline(device: Device, duration: float = BASELINE_DURATION_SEC) -> float:
@@ -82,9 +89,12 @@ def read_device_loop(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--type", choices=["soft", "medium", "hard", "none"], default=None)
     args = parser.parse_args()
 
     suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if args.type is not None:
+        suffix = f"{suffix}_{args.type}"
     recording_dir = DATA_DIR / suffix
     recording_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,6 +115,15 @@ def main() -> None:
     load_cell.baseline = baseline
     load_cell._history.clear()
     print(f"[LoadCell] Baseline: {baseline:.2f}")
+
+    baseline_audio = device.mems_sensor.get_last_samples(int(MEMSSensor.SAMPLE_RATE * BASELINE_DURATION_SEC))
+    baseline_audio = baseline_audio - baseline_audio.mean()
+    try:
+        mic_calibration = mic_calibration_factor(baseline_audio, baseline_sec=BASELINE_DURATION_SEC)
+        print(f"[MEMS] Mic calibration (band-pass envelope median): {mic_calibration:.2f}")
+    except ValueError as error:
+        print(f"[MEMS] Skipping calibration: {error}")
+        mic_calibration = None
 
     device.initialize_logging(log_path, mems_path)
 
@@ -134,7 +153,7 @@ def main() -> None:
     finally:
         stop.set()
         reader.join(timeout=3)
-        save_marks(marks_path, start_epoch, marks)
+        save_marks(marks_path, start_epoch, marks, mic_calibration)
         device.close()
         print(f"Saved {len(marks)} marks to {marks_path}")
         if weight_lost.is_set():

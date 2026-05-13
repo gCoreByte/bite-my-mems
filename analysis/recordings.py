@@ -10,7 +10,7 @@ from scipy.signal import butter, find_peaks, sosfilt
 
 
 MEMS_SAMPLE_RATE = 22050
-WINDOW_SEC = 0.3
+WINDOW_SEC = 1.0
 ENV_WINDOW_MS = 10
 ENV_SAMPLE_COUNT = int(2 * WINDOW_SEC * (1000 / ENV_WINDOW_MS))
 LC_SATURATION = 8388607
@@ -69,7 +69,7 @@ def load_log(path: Path) -> pd.DataFrame:
     if data.empty:
         raise ValueError(f"{path} is empty.")
 
-    data["timestamp"] = pd.to_datetime(data["timestamp"])
+    data["timestamp"] = pd.to_datetime(data["timestamp"], format="ISO8601")
     start = data["timestamp"].iloc[0]
     data["t_sec"] = (data["timestamp"] - start).dt.total_seconds()
     return data
@@ -83,6 +83,42 @@ def load_mems(path: Path) -> np.ndarray:
 def bandpass(samples: np.ndarray, low: int, high: int) -> np.ndarray:
     sos = butter(4, [low, high], btype="band", fs=MEMS_SAMPLE_RATE, output="sos")
     return sosfilt(sos, samples)
+
+
+def mic_calibration_factor(
+    samples: np.ndarray,
+    baseline_sec: float = 2.0,
+    band: tuple[int, int] = (300, 5000),
+    smooth_ms: int = 30,
+) -> float:
+    """Median band-pass envelope over the first `baseline_sec` of audio.
+
+    Used as a per-recording mic-gain reference: divide the rest of the recording
+    by this value to put the ambient noise floor on a common scale across sessions.
+    """
+    baseline_samples = int(baseline_sec * MEMS_SAMPLE_RATE)
+    quiet = samples[:baseline_samples]
+    if len(quiet) < MEMS_SAMPLE_RATE // 4:
+        raise ValueError("Not enough baseline audio to compute calibration.")
+
+    filtered = bandpass(quiet, band[0], band[1])
+    smooth_window = max(1, int(MEMS_SAMPLE_RATE * smooth_ms / 1000))
+    envelope = np.sqrt(uniform_filter1d(filtered**2, size=smooth_window))
+    return float(max(np.median(envelope), 1e-6))
+
+
+def load_mic_calibration(recording: Recording, samples: np.ndarray | None = None) -> float:
+    """Return the persisted mic calibration if present, else recompute from audio."""
+    if recording.marks_path is not None:
+        with recording.marks_path.open() as file:
+            payload = json.load(file)
+        value = payload.get("mic_calibration")
+        if value is not None:
+            return float(value)
+
+    if samples is None:
+        samples = load_mems(recording.mems_path)
+    return mic_calibration_factor(samples)
 
 
 def compute_envelopes(samples: np.ndarray, time_scale: float) -> tuple[np.ndarray, list[np.ndarray]]:
@@ -156,8 +192,10 @@ def extract_window(time_sec: float, envelope_times: np.ndarray, envelopes: list[
 def load_force_windows(recording: Recording) -> tuple[list[np.ndarray], list[float]]:
     log = load_log(recording.csv_path)
     mems = load_mems(recording.mems_path)
+    calibration = load_mic_calibration(recording, mems)
     time_scale = log["t_sec"].iloc[-1] / (len(mems) / MEMS_SAMPLE_RATE)
     envelope_times, envelopes = compute_envelopes(mems, time_scale)
+    envelopes = [envelope / calibration for envelope in envelopes]
 
     events, detrended_force, source = event_times(recording, log)
     windows = []
@@ -177,8 +215,10 @@ def load_force_windows(recording: Recording) -> tuple[list[np.ndarray], list[flo
 def load_binary_windows(recording: Recording, negative_ratio: int = 2) -> tuple[list[np.ndarray], list[np.ndarray]]:
     log = load_log(recording.csv_path)
     mems = load_mems(recording.mems_path)
+    calibration = load_mic_calibration(recording, mems)
     time_scale = log["t_sec"].iloc[-1] / (len(mems) / MEMS_SAMPLE_RATE)
     envelope_times, envelopes = compute_envelopes(mems, time_scale)
+    envelopes = [envelope / calibration for envelope in envelopes]
     bite_times, _, source = event_times(recording, log)
 
     positives = [
@@ -187,21 +227,30 @@ def load_binary_windows(recording: Recording, negative_ratio: int = 2) -> tuple[
         if window is not None
     ]
 
-    seed = int.from_bytes(hashlib.md5(recording.label.encode()).digest()[:4], "big")
-    rng = np.random.default_rng(seed)
-    negatives = []
-    attempts = 0
-    target_negatives = len(positives) * negative_ratio
-    max_attempts = max(target_negatives * 20, 1)
-
-    while len(negatives) < target_negatives and attempts < max_attempts:
-        candidate = rng.uniform(WINDOW_SEC, float(envelope_times[-1]) - WINDOW_SEC)
-        far_from_bites = all(abs(candidate - bite_time) > 1.0 for bite_time in bite_times)
-        if far_from_bites:
+    negatives: list[np.ndarray] = []
+    if not bite_times:
+        candidate = WINDOW_SEC
+        end_time = float(envelope_times[-1]) - WINDOW_SEC
+        while candidate <= end_time:
             window = extract_window(candidate, envelope_times, envelopes)
             if window is not None:
                 negatives.append(window)
-        attempts += 1
+            candidate += 2 * WINDOW_SEC
+    else:
+        seed = int.from_bytes(hashlib.md5(recording.label.encode()).digest()[:4], "big")
+        rng = np.random.default_rng(seed)
+        attempts = 0
+        target_negatives = len(positives) * negative_ratio
+        max_attempts = max(target_negatives * 20, 1)
+
+        while len(negatives) < target_negatives and attempts < max_attempts:
+            candidate = rng.uniform(WINDOW_SEC, float(envelope_times[-1]) - WINDOW_SEC)
+            far_from_bites = all(abs(candidate - bite_time) > 2 * WINDOW_SEC for bite_time in bite_times)
+            if far_from_bites:
+                window = extract_window(candidate, envelope_times, envelopes)
+                if window is not None:
+                    negatives.append(window)
+            attempts += 1
 
     print(f"  [{recording.label}] {len(positives)} bites, {len(negatives)} non-bites ({source})")
     return positives, negatives

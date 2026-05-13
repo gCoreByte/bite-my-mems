@@ -19,7 +19,6 @@ from recordings import (
     DATA_DIR,
     find_recordings,
     load_force_windows,
-    normalize_windows_by_recording,
     train_test_mask,
 )
 
@@ -69,9 +68,9 @@ def build_dataset(directory: str = str(DATA_DIR)) -> tuple[np.ndarray, np.ndarra
 
     for recording in recordings:
         windows, forces = load_force_windows(recording)
-        windows = normalize_windows_by_recording(windows)
         if not windows:
-            raise Exception(f"No events found in recording {recording.label}.")
+            print("    -> skipped (no events)")
+            continue
 
         all_windows.extend(windows)
         all_forces.extend(forces)
@@ -79,33 +78,30 @@ def build_dataset(directory: str = str(DATA_DIR)) -> tuple[np.ndarray, np.ndarra
 
     # extract_window returns (channels, time); Keras Conv1D wants (time, channels).
     X = np.array(all_windows, dtype=np.float32).transpose(0, 2, 1)
+    # log1p compresses heavy-tailed envelope amplitudes (bites are >> noise floor).
+    X = np.log1p(X)
     y_raw = np.array(all_forces, dtype=np.float32)
-    # Normalize targets so MSE isn't dominated by absolute force magnitude.
-    # max(std, 1.0) guards a degenerate constant-target split from divide-by-zero.
-    y_mean = float(y_raw.mean())
-    y_std = float(max(y_raw.std(), 1.0))
-    y = (y_raw - y_mean) / y_std
 
     print(f"\nTotal events: {len(X)}")
     print(f"Force range: {y_raw.min():.0f}-{y_raw.max():.0f}")
 
     test_mask = train_test_mask(len(X))
-    return X[~test_mask], y[~test_mask], X[test_mask], y[test_mask], y_raw[test_mask], {"y_mean": y_mean, "y_std": y_std}
+    X_train_raw, X_test_raw = X[~test_mask], X[test_mask]
+    y_train_raw, y_test_raw = y_raw[~test_mask], y_raw[test_mask]
 
+    # Per-channel input z-score and target normalization use train-only stats to avoid leakage.
+    x_mean = X_train_raw.mean(axis=(0, 1), keepdims=True)
+    x_std = X_train_raw.std(axis=(0, 1), keepdims=True)
+    x_std = np.where(x_std > 0, x_std, 1.0)
+    X_train = (X_train_raw - x_mean) / x_std
+    X_test = (X_test_raw - x_mean) / x_std
 
-def augment(inputs: tf.Tensor, _label: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
-    # `inputs` is one unbatched sample shaped (time, channels) — axis 0 is time.
-    # tf.data calls this per-example, so each gets its own shift/noise/scale draw.
-    length = tf.shape(inputs)[0]
-    # Shift up to ±5% of window length — simulates small bite-onset timing jitter.
-    max_shift = tf.maximum(length // 20, 1)
-    shift = tf.random.uniform([], -max_shift, max_shift + 1, dtype=tf.int32)
-    shifted = tf.roll(inputs, shift=shift, axis=0)
+    y_mean = float(y_train_raw.mean())
+    y_std = float(max(y_train_raw.std(), 1.0))
+    y_train = (y_train_raw - y_mean) / y_std
+    y_test = (y_test_raw - y_mean) / y_std
 
-    # Additive Gaussian noise + multiplicative gain mimic mic placement / level variation.
-    noise = 0.1 * tf.random.normal(tf.shape(shifted))
-    scale = 0.8 + 0.4 * tf.random.uniform([])
-    return (shifted + noise) * scale, _label
+    return X_train, y_train, X_test, y_test, y_test_raw, {"y_mean": y_mean, "y_std": y_std}
 
 
 def train_model(
@@ -116,13 +112,9 @@ def train_model(
     y_test_raw: np.ndarray,
     target_norm: dict[str, float],
 ) -> tuple[dict[str, list[float]], np.ndarray, np.ndarray, float, float]:
-    # Augment BEFORE batch so each sample's (time, channels) tensor is unbatched,
-    # matching `augment`'s assumption that axis 0 is time. Shuffle before map so
-    # different examples land in different batches each epoch.
     train_ds = (
         tf.data.Dataset.from_tensor_slices((X_train, y_train))
         .shuffle(len(X_train))
-        .map(augment, num_parallel_calls=tf.data.AUTOTUNE)
         .batch(BATCH_SIZE)
         .prefetch(tf.data.AUTOTUNE)
     )
