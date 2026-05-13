@@ -68,4 +68,12 @@ Two packet types share a common header:
 
 
 
-The MEMS microphone should be positioned by either the 18th or 31st tooth. 
+The MEMS microphone should be positioned by either the 18th or 31st tooth.
+
+## Calibrating the load cell
+
+`calibrate/calibrate.py` expects a minimal firmware that prints raw HX711 readings as plain text — not the binary protocol used during recording. To calibrate:
+
+1. Replace `arduino_code/src/main.cpp` with `arduino_code/src/main.cpp.calibration` and flash the ESP32.
+2. Run `python calibrate/calibrate.py` and follow the prompts. The scale factor and tare are written to `data/scale.bin`.
+3. Restore the original `main.cpp` and reflash before running `gather/main.py`.
