@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bite force predictor</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         margin: 0; padding: 24px; background: #0f1115; color: #e6e6e6; }
+  h1 { margin: 0 0 16px; font-size: 20px; font-weight: 500; }
+  .row { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+  .card { background: #181b22; border-radius: 10px; padding: 18px; }
+  canvas { width: 100%; height: 240px; display: block; }
+  .latest { font-size: 60px; font-weight: 600; color: #5fd07a; line-height: 1.1; }
+  .latest .unit { font-size: 24px; color: #8a8f99; margin-left: 6px; }
+  .sub { color: #8a8f99; font-size: 13px; margin-top: 4px; }
+  .meta { color: #8a8f99; font-size: 12px; margin-top: 12px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid #23262e; }
+  th { color: #8a8f99; font-weight: 500; }
+  td:first-child, th:first-child { text-align: left; color: #8a8f99; }
+  .lost { color: #ff6b6b; font-weight: 500; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+  <h1>Live bite force predictor</h1>
+  <div id="lost" class="lost" style="display:none"></div>
+  <div class="row">
+    <div class="card">
+      <div class="sub">Load cell (g) — last <span id="window">8</span> s</div>
+      <canvas id="chart"></canvas>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="card">
+      <div class="sub">Last predicted bite force</div>
+      <div class="latest"><span id="latest">—</span><span class="unit">g</span></div>
+      <div class="sub" id="latest-measured"></div>
+      <table>
+        <thead><tr><th>#</th><th>Predicted</th><th>Measured</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+    </div>
+  </div>
+<script>
+const canvas = document.getElementById("chart");
+const ctx = canvas.getContext("2d");
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", resize);
+resize();
+
+function drawChart(weights, bufferSeconds) {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  ctx.fillStyle = "#0f1115";
+  ctx.fillRect(0, 0, w, h);
+  if (weights.length < 2) return;
+
+  const tMax = weights[weights.length - 1][0];
+  const tMin = tMax - bufferSeconds;
+  let yMin = Infinity, yMax = -Infinity;
+  for (const [, v] of weights) {
+    if (v < yMin) yMin = v;
+    if (v > yMax) yMax = v;
+  }
+  if (yMax - yMin < 100) {
+    const mid = (yMax + yMin) / 2;
+    yMin = mid - 50; yMax = mid + 50;
+  }
+  const pad = (yMax - yMin) * 0.1;
+  yMin -= pad; yMax += pad;
+
+  ctx.strokeStyle = "#23262e";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = (h - 20) * (i / 4) + 10;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+
+  if (yMin < 0 && yMax > 0) {
+    const zeroY = h - 10 - ((0 - yMin) / (yMax - yMin)) * (h - 20);
+    ctx.strokeStyle = "#3a3f4a";
+    ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(w, zeroY); ctx.stroke();
+  }
+
+  ctx.strokeStyle = "#5fd07a";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let started = false;
+  for (const [t, v] of weights) {
+    const x = ((t - tMin) / bufferSeconds) * w;
+    const y = h - 10 - ((v - yMin) / (yMax - yMin)) * (h - 20);
+    if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  document.getElementById("meta").textContent =
+    `range ${yMin.toFixed(0)} … ${yMax.toFixed(0)} g · ${weights.length} samples`;
+}
+
+async function tick() {
+  try {
+    const res = await fetch("/data");
+    const data = await res.json();
+    if (data.connection_lost) {
+      const lost = document.getElementById("lost");
+      lost.style.display = "block";
+      lost.textContent = "Connection lost: " + (data.lost_reason || "unknown");
+    }
+    document.getElementById("window").textContent = data.buffer_seconds;
+    drawChart(data.weights, data.buffer_seconds);
+
+    const latest = data.predictions[0];
+    const latestEl = document.getElementById("latest");
+    const latestMeasured = document.getElementById("latest-measured");
+    if (latest) {
+      latestEl.textContent = latest.predicted.toFixed(0);
+      latestMeasured.textContent = `measured ${latest.measured.toFixed(0)} g`;
+    } else {
+      latestEl.textContent = "—";
+      latestMeasured.textContent = "waiting for first bite…";
+    }
+    const body = document.getElementById("history");
+    body.innerHTML = "";
+    data.predictions.forEach((p, i) => {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td>${i + 1}</td><td>${p.predicted.toFixed(0)} g</td><td>${p.measured.toFixed(0)} g</td>`;
+      body.appendChild(row);
+    });
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+setInterval(tick, 150);
+tick();
+</script>
+</body>
+</html>
