@@ -99,7 +99,7 @@ function drawChart(weights, bufferSeconds) {
   ctx.stroke();
 
   document.getElementById("meta").textContent =
-    `range ${yMin.toFixed(0)} … ${yMax.toFixed(0)} g · ${weights.length} samples`;
+    `range ${yMin.toFixed(0)/10} … ${yMax.toFixed(0)/10} g · ${weights.length} samples`;
 }
 
 async function tick() {
@@ -118,8 +118,8 @@ async function tick() {
     const latestEl = document.getElementById("latest");
     const latestMeasured = document.getElementById("latest-measured");
     if (latest) {
-      latestEl.textContent = latest.predicted.toFixed(0);
-      latestMeasured.textContent = `measured ${latest.measured.toFixed(0)} g`;
+      latestEl.textContent = latest.predicted.toFixed(0) / 10;
+      latestMeasured.textContent = `measured ${latest.measured.toFixed(0)/10} g`;
     } else {
       latestEl.textContent = "—";
       latestMeasured.textContent = "waiting for first bite…";
@@ -128,7 +128,7 @@ async function tick() {
     body.innerHTML = "";
     data.predictions.forEach((p, i) => {
       const row = document.createElement("tr");
-      row.innerHTML = `<td>${i + 1}</td><td>${p.predicted.toFixed(0)} g</td><td>${p.measured.toFixed(0)} g</td>`;
+      row.innerHTML = `<td>${i + 1}</td><td>${p.predicted.toFixed(0)/10} g</td><td>${p.measured.toFixed(0)/10} g</td>`;
       body.appendChild(row);
     });
   } catch (e) {

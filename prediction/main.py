@@ -50,9 +50,14 @@ PORT = 8765
 
 WEIGHT_BUFFER_SECONDS = 8
 PREDICTION_HISTORY = 10
-BITE_THRESHOLD_GRAMS = 300.0
+BITE_THRESHOLD_GRAMS = 1500.0
 BITE_REFRACTORY_SEC = 1.2
 POST_BITE_WAIT_SEC = WINDOW_SEC + 0.05
+# Extra audio fed to the bandpass filter before the actual prediction window,
+# so the IIR filter has time to settle. Without this pre-roll, every window's
+# envelope is dominated by the filter transient and predictions collapse to y_mean.
+FILTER_PREROLL_SEC = 1.0
+TOTAL_AUDIO_SEC = FILTER_PREROLL_SEC + 2 * WINDOW_SEC + POST_BITE_WAIT_SEC
 
 
 def compute_normalization_stats() -> tuple[np.ndarray, np.ndarray, float, float]:
@@ -87,18 +92,26 @@ def compute_normalization_stats() -> tuple[np.ndarray, np.ndarray, float, float]
     return x_mean, x_std, y_mean, y_std
 
 
-def envelope_from_audio(audio: np.ndarray) -> np.ndarray:
-    """Compute the multi-band envelope window the CNN expects, shape (channels, ENV_SAMPLE_COUNT)."""
-    window = int(MEMS_SAMPLE_RATE * ENV_WINDOW_MS / 1000)
+def envelope_from_audio(audio: np.ndarray, valid_start_sec: float, valid_length_sec: float) -> np.ndarray:
+    """Compute the multi-band envelope window the CNN expects, shape (channels, ENV_SAMPLE_COUNT).
+
+    `audio` is longer than the actual prediction window — we filter the full clip
+    so bandpass transients live in the discarded pre-roll, then slice out the
+    centered window before resampling.
+    """
+    smooth = int(MEMS_SAMPLE_RATE * ENV_WINDOW_MS / 1000)
+    start = int(valid_start_sec * MEMS_SAMPLE_RATE)
+    length = int(valid_length_sec * MEMS_SAMPLE_RATE)
     channels = []
     for _, low, high in BANDS:
         filtered = bandpass(audio, low, high)
-        envelope = np.sqrt(uniform_filter1d(filtered**2, size=window))
+        envelope = np.sqrt(uniform_filter1d(filtered**2, size=smooth))
+        segment = envelope[start : start + length]
         channels.append(
             np.interp(
                 np.linspace(0, 1, ENV_SAMPLE_COUNT),
-                np.linspace(0, 1, len(envelope)),
-                envelope,
+                np.linspace(0, 1, len(segment)),
+                segment,
             )
         )
     return np.stack(channels, axis=0).astype(np.float32)
@@ -121,13 +134,19 @@ class Predictor:
         self.y_std = y_std
         self.mic_calibration = mic_calibration
 
-    def predict(self, audio: np.ndarray) -> float:
-        envelope = envelope_from_audio(audio) / self.mic_calibration
-        X = np.log1p(envelope.T)
-        X = (X - self.x_mean) / self.x_std
-        X = X[np.newaxis, ...]
-        normalized = float(self.model.predict(X, verbose=0)[0])
-        return normalized * self.y_std + self.y_mean
+    def predict(self, audio: np.ndarray, valid_start_sec: float, valid_length_sec: float) -> float:
+        envelope = envelope_from_audio(audio, valid_start_sec, valid_length_sec) / self.mic_calibration
+        X_log = np.log1p(envelope.T)
+        X = (X_log - self.x_mean) / self.x_std
+        normalized = float(self.model.predict(X[np.newaxis, ...], verbose=0)[0])
+        force = normalized * self.y_std + self.y_mean
+        print(
+            f"[predictor] env(raw): max={envelope.max():.2f} mean={envelope.mean():.2f} | "
+            f"log1p: max={X_log.max():.2f} mean={X_log.mean():.2f} | "
+            f"norm: min={X.min():.2f} max={X.max():.2f} | "
+            f"z_pred={normalized:+.3f} -> {force:.0f}g"
+        )
+        return force
 
 
 class State:
@@ -166,6 +185,22 @@ class State:
                 "connection_lost": self.connection_lost,
                 "lost_reason": self.lost_reason,
             }
+
+    def weights_snapshot(self) -> list[tuple[float, float]]:
+        with self.lock:
+            return list(self.weights)
+
+
+def detrended_peak_force(weights: list[tuple[float, float]], peak_t: float, half_window: float = 0.5) -> float:
+    """max(|weight - rolling_mean|) within ±half_window of peak_t — matches training labels."""
+    if len(weights) < 10:
+        return 0.0
+    times = np.array([t for t, _ in weights])
+    values = np.array([w for _, w in weights])
+    rolling = uniform_filter1d(values, size=min(200, len(values)))
+    detrended = np.abs(values - rolling)
+    mask = (times >= peak_t - half_window) & (times <= peak_t + half_window)
+    return float(np.max(detrended[mask])) if mask.any() else 0.0
 
 
 def device_loop(
@@ -208,15 +243,20 @@ def device_loop(
                         or peak_t - state.last_bite_time >= BITE_REFRACTORY_SEC
                     ):
                         state.last_bite_time = peak_t
-                        pending_bite = {"t": peak_t, "measured": abs(peak_w), "wait_until": peak_t + POST_BITE_WAIT_SEC}
+                        pending_bite = {"t": peak_t, "wait_until": peak_t + POST_BITE_WAIT_SEC}
 
         if pending_bite is not None and now_rel >= pending_bite["wait_until"]:
-            audio = device.mems_sensor.get_last_samples(int(MEMS_SAMPLE_RATE * 2 * WINDOW_SEC))
-            if len(audio) >= int(MEMS_SAMPLE_RATE * 2 * WINDOW_SEC * 0.9):
+            target_samples = int(MEMS_SAMPLE_RATE * TOTAL_AUDIO_SEC)
+            audio = device.mems_sensor.get_last_samples(target_samples)
+            if len(audio) >= int(target_samples * 0.95):
                 audio = audio - audio.mean()
+                # Audio buffer covers [now - TOTAL_AUDIO_SEC, now]. The bite was at
+                # peak_t ≈ now - POST_BITE_WAIT_SEC, so the centered 2 sec prediction
+                # window starts FILTER_PREROLL_SEC into the buffer.
                 try:
-                    predicted = predictor.predict(audio)
-                    state.add_prediction(pending_bite["t"], predicted, pending_bite["measured"])
+                    predicted = predictor.predict(audio, FILTER_PREROLL_SEC, 2 * WINDOW_SEC)
+                    measured = detrended_peak_force(state.weights_snapshot(), pending_bite["t"])
+                    state.add_prediction(pending_bite["t"], predicted, measured)
                 except Exception as error:  # noqa: BLE001
                     print(f"[predictor] prediction failed: {error}")
             pending_bite = None
@@ -274,6 +314,8 @@ def main() -> None:
     print("Recomputing training normalization stats...")
     x_mean, x_std, y_mean, y_std = compute_normalization_stats()
     print(f"  y_mean={y_mean:.1f}, y_std={y_std:.1f}")
+    print(f"  x_mean(per channel)={x_mean[0, 0].tolist()}")
+    print(f"  x_std(per channel)={x_std[0, 0].tolist()}")
 
     template = TEMPLATE_PATH.read_bytes()
 
@@ -295,7 +337,7 @@ def main() -> None:
     baseline_audio = mems.get_last_samples(int(MEMSSensor.SAMPLE_RATE * BASELINE_DURATION_SEC))
     baseline_audio = baseline_audio - baseline_audio.mean()
     mic_calibration = mic_calibration_factor(baseline_audio, baseline_sec=BASELINE_DURATION_SEC)
-    print(f"[MEMS] Mic calibration: {mic_calibration:.2f}")
+    print(f"[MEMS] Mic calibration: {mic_calibration:.2f} (training values were ~15-22)")
 
     predictor = Predictor(model, x_mean, x_std, y_mean, y_std, mic_calibration)
     state = State()
