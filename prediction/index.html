@@ -11,8 +11,13 @@
   .card { background: #181b22; border-radius: 10px; padding: 18px; }
   canvas { width: 100%; height: 240px; display: block; }
   .latest { font-size: 60px; font-weight: 600; color: #5fd07a; line-height: 1.1; }
+  .measured { color: #e6e6e6; margin-top: 2px; }
   .latest .unit { font-size: 24px; color: #8a8f99; margin-left: 6px; }
   .sub { color: #8a8f99; font-size: 13px; margin-top: 4px; }
+  .diff { font-size: 20px; font-weight: 600; margin-top: 10px; }
+  .diff-good { color: #5fd07a; }
+  .diff-warn { color: #ffd166; }
+  .diff-bad { color: #ff6b6b; }
   .meta { color: #8a8f99; font-size: 12px; margin-top: 12px; }
   table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
   th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid #23262e; }
@@ -33,7 +38,9 @@
     <div class="card">
       <div class="sub">Last predicted bite force</div>
       <div class="latest"><span id="latest">—</span><span class="unit">g</span></div>
-      <div class="sub" id="latest-measured"></div>
+      <div class="sub">Measured bite force</div>
+      <div class="latest measured"><span id="latest-measured">—</span><span class="unit">g</span></div>
+      <div class="diff" id="latest-diff"></div>
       <table>
         <thead><tr><th>#</th><th>Predicted</th><th>Measured</th></tr></thead>
         <tbody id="history"></tbody>
@@ -117,12 +124,20 @@ async function tick() {
     const latest = data.predictions[0];
     const latestEl = document.getElementById("latest");
     const latestMeasured = document.getElementById("latest-measured");
+    const latestDiff = document.getElementById("latest-diff");
     if (latest) {
-      latestEl.textContent = latest.predicted.toFixed(0) / 10;
-      latestMeasured.textContent = `measured ${latest.measured.toFixed(0)/10} g`;
+      const predicted = latest.predicted / 10;
+      const measured = latest.measured / 10;
+      const difference = Math.abs(predicted - measured);
+      latestEl.textContent = predicted.toFixed(0);
+      latestMeasured.textContent = measured.toFixed(0);
+      latestDiff.textContent = `difference ${difference.toFixed(0)} g`;
+      latestDiff.className = "diff " + getDifferenceClass(difference);
     } else {
       latestEl.textContent = "—";
-      latestMeasured.textContent = "waiting for first bite…";
+      latestMeasured.textContent = "—";
+      latestDiff.textContent = "waiting for first bite...";
+      latestDiff.className = "diff";
     }
     const body = document.getElementById("history");
     body.innerHTML = "";
@@ -138,6 +153,12 @@ async function tick() {
 
 setInterval(tick, 150);
 tick();
+
+function getDifferenceClass(difference) {
+  if (difference <= 1000) return "diff-good";
+  if (difference < 3000) return "diff-warn";
+  return "diff-bad";
+}
 </script>
 </body>
 </html>
